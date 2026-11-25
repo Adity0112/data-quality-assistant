@@ -4,160 +4,194 @@ from pipeline.ingestion import (
     execute_query
 )
 
+from pipeline.snapshot_manager import validate_snapshot_id
+
+from config.settings import (
+    bronze_history_table,
+    snapshot_schema_table
+)
+
 
 # ------------------------------------------------
-# 1. Check Null Values
+# 1. GET SNAPSHOT TABLE
 # ------------------------------------------------
 
-def check_null_values(table_name):
+def get_snapshot_table():
 
-    full_table_name = get_full_table_name(table_name)
+    return get_full_table_name(bronze_history_table)
 
-    # Get column names from Databricks
-    from pipeline.ingestion import get_table_schema
 
-    schema = get_table_schema(table_name)
+# ------------------------------------------------
+# 2. GET COLUMNS FOR A PARTICULAR SNAPSHOT
+# ------------------------------------------------
 
-    if not schema:
-        raise ValueError("Table contains no columns.")
+def get_snapshot_columns(snapshot_id):
 
-    # Build SQL expressions for each column
+    snapshot_id = validate_snapshot_id(snapshot_id)
+
+    schema_table = get_full_table_name(snapshot_schema_table)
+
+    query = f"""
+        SELECT column_name
+
+        FROM {schema_table}
+
+        WHERE snapshot_id = '{snapshot_id}'
+
+        ORDER BY column_name
+    """
+
+    rows = execute_query(query)
+
+    columns = [row[0] for row in rows]
+
+    if not columns:
+        raise ValueError(
+            "No schema information found for this snapshot."
+        )
+
+    return columns
+
+
+# ------------------------------------------------
+# 3. CHECK NULL VALUES
+# ------------------------------------------------
+
+def check_null_values(snapshot_id):
+
+    snapshot_id = validate_snapshot_id(snapshot_id)
+
+    history_table = get_snapshot_table()
+
+    columns = get_snapshot_columns(snapshot_id)
+
     null_expressions = []
 
-    for column in schema:
+    for column in columns:
 
-        column_name = column["column_name"]
-
-        # Safely quote column identifier
-        safe_column = (
-            "`" + column_name.replace("`", "``") + "`"
-        )
+        safe_column = f"`{column.replace('`', '``')}`"
 
         null_expressions.append(
             f"SUM(CASE WHEN {safe_column} IS NULL "
-            f"THEN 1 ELSE 0 END) AS {safe_column}"
+            f"THEN 1 ELSE 0 END) AS `{column}`"
         )
 
     query = f"""
         SELECT
             COUNT(*) AS total_rows,
             {", ".join(null_expressions)}
-        FROM {full_table_name}
+
+        FROM {history_table}
+
+        WHERE snapshot_id = '{snapshot_id}'
     """
 
-    result = execute_query(query)
+    rows = execute_query(query)
 
-    total_rows = result[0][0]
+    if not rows or rows[0][0] == 0:
+        raise ValueError("Snapshot contains no records.")
 
-    null_report = []
+    total_rows = rows[0][0]
 
-    total_null_values = 0
+    null_results = []
 
-    for index, column in enumerate(schema):
+    for index, column in enumerate(columns, start=1):
 
-        null_count = result[0][index + 1] or 0
+        null_count = rows[0][index]
 
         null_percentage = (
-            (null_count / total_rows) * 100
-            if total_rows > 0 else 0
-        )
+            null_count / total_rows
+        ) * 100
 
-        total_null_values += null_count
-
-        null_report.append({
-
-            "column_name": column["column_name"],
-
-            "null_count": int(null_count),
-
-            "null_percentage": round(
-                null_percentage, 2
-            ),
-
-            "has_nulls": bool(null_count > 0)
-
+        null_results.append({
+            "column_name": column,
+            "null_count": null_count,
+            "null_percentage": round(null_percentage, 2)
         })
 
     return {
-
+        "snapshot_id": snapshot_id,
         "total_rows": total_rows,
-
-        "null_report": null_report,
-
-        "total_null_values": total_null_values,
-
-        "has_nulls": bool(total_null_values > 0)
-
+        "null_results": null_results,
+        "has_null_values": any(
+            item["null_count"] > 0
+            for item in null_results
+        )
     }
 
 
 # ------------------------------------------------
-# 2. Check Duplicate Records
+# 4. CHECK DUPLICATE ROWS
 # ------------------------------------------------
 
-def check_duplicates(table_name):
+def check_duplicates(snapshot_id):
 
-    full_table_name = get_full_table_name(table_name)
+    snapshot_id = validate_snapshot_id(snapshot_id)
+
+    history_table = get_snapshot_table()
+
+    columns = get_snapshot_columns(snapshot_id)
+
+    column_list = ", ".join(
+        f"`{column.replace('`', '``')}`"
+        for column in columns
+    )
 
     query = f"""
         SELECT
-            COUNT(*) AS total_rows,
+            (
+                SELECT COUNT(*)
+                FROM {history_table}
+                WHERE snapshot_id = '{snapshot_id}'
+            ) AS total_rows,
 
-            COUNT(*) - COUNT(DISTINCT *) AS duplicate_count
+            COALESCE(SUM(row_count - 1), 0) AS duplicate_count
 
-        FROM {full_table_name}
+        FROM (
+            SELECT COUNT(*) AS row_count
+
+            FROM {history_table}
+
+            WHERE snapshot_id = '{snapshot_id}'
+
+            GROUP BY {column_list}
+
+            HAVING COUNT(*) > 1
+        ) duplicate_groups
     """
 
-    result = execute_query(query)
+    rows = execute_query(query)
 
-    total_rows = result[0][0]
-    duplicate_count = result[0][1]
-
-    duplicate_percentage = (
-
-        (duplicate_count / total_rows) * 100
-
-        if total_rows > 0 else 0
-
-    )
+    total_rows = rows[0][0]
+    duplicate_count = rows[0][1]
 
     return {
-
+        "snapshot_id": snapshot_id,
         "total_rows": total_rows,
-
         "duplicate_count": duplicate_count,
-
-        "duplicate_percentage": round(
-            duplicate_percentage, 2
-        ),
-
-        "has_duplicates": bool(duplicate_count > 0)
-
+        "has_duplicates": duplicate_count > 0
     }
 
 
 # ------------------------------------------------
-# 3. Run Null and Duplicate Validation
+# 5. RUN BOTH CHECKS
 # ------------------------------------------------
 
-def run_null_duplicate_check(table_name):
+def run_null_duplicate_check(snapshot_id):
 
-    null_result = check_null_values(table_name)
+    null_result = check_null_values(snapshot_id)
 
-    duplicate_result = check_duplicates(table_name)
+    duplicate_result = check_duplicates(snapshot_id)
 
     return {
+        "snapshot_id": snapshot_id,
 
         "null_check": null_result,
 
         "duplicate_check": duplicate_result,
 
         "has_quality_issues": (
-
-            null_result["has_nulls"]
-
+            null_result["has_null_values"]
             or duplicate_result["has_duplicates"]
-
         )
-
     }

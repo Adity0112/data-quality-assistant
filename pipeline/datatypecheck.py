@@ -1,89 +1,212 @@
 
-from pipeline.ingestion import get_table_schema
+from pipeline.ingestion import (
+    get_full_table_name,
+    execute_query
+)
 
-from config.settings import new_data_table
+from pipeline.snapshot_manager import validate_snapshot_id
+
+from config.settings import snapshot_schema_table
 
 
 # ------------------------------------------------
-# 1. Check Data Types
+# 1. GET SCHEMA OF A SNAPSHOT
 # ------------------------------------------------
 
-def check_data_types(table_name, expected_schema):
+def get_snapshot_schema(snapshot_id):
 
-    # Fetch actual schema from Databricks
-    actual_schema = get_table_schema(table_name)
+    snapshot_id = validate_snapshot_id(snapshot_id)
 
-    actual_columns = {
-        column["column_name"]: column["data_type"]
-        for column in actual_schema
+    schema_table = get_full_table_name(snapshot_schema_table)
+
+    query = f"""
+        SELECT column_name, data_type
+        FROM {schema_table}
+        WHERE snapshot_id = '{snapshot_id}'
+    """
+
+    rows = execute_query(query)
+
+    if not rows:
+        raise ValueError(
+            f"No schema found for snapshot: {snapshot_id}"
+        )
+
+    schema = {}
+
+    for row in rows:
+
+        column_name = row[0]
+        data_type = row[1]
+
+        schema[column_name] = data_type
+
+    return schema
+
+
+# ------------------------------------------------
+# 2. NORMALIZE DATA TYPES
+# ------------------------------------------------
+
+def normalize_data_type(data_type):
+
+    data_type = data_type.lower().strip()
+
+    type_aliases = {
+        "int": "integer",
+        "long": "bigint",
+        "varchar": "string",
+        "text": "string",
+        "bool": "boolean"
     }
 
-    datatype_issues = []
+    return type_aliases.get(data_type, data_type)
+
+
+# ------------------------------------------------
+# 3. COMPARE TWO SNAPSHOT SCHEMAS
+# ------------------------------------------------
+
+def check_data_types(previous_snapshot_id, current_snapshot_id):
+
+    previous_snapshot_id = validate_snapshot_id(
+        previous_snapshot_id
+    )
+
+    current_snapshot_id = validate_snapshot_id(
+        current_snapshot_id
+    )
+
+    if previous_snapshot_id == current_snapshot_id:
+        raise ValueError(
+            "Previous and current snapshot IDs must be different."
+        )
+
+    previous_schema = get_snapshot_schema(
+        previous_snapshot_id
+    )
+
+    current_schema = get_snapshot_schema(
+        current_snapshot_id
+    )
+
+    # Normalize column names for comparison
+    previous_columns = {
+        column.lower(): {
+            "column_name": column,
+            "data_type": data_type
+        }
+        for column, data_type in previous_schema.items()
+    }
+
+    current_columns = {
+        column.lower(): {
+            "column_name": column,
+            "data_type": data_type
+        }
+        for column, data_type in current_schema.items()
+    }
+
+    previous_names = set(previous_columns.keys())
+    current_names = set(current_columns.keys())
+
+    # ------------------------------------------------
+    # 4. FIND NEW AND REMOVED COLUMNS
+    # ------------------------------------------------
+
+    new_columns = []
+
+    for column in current_names - previous_names:
+
+        details = current_columns[column]
+
+        new_columns.append({
+            "column_name": details["column_name"],
+            "data_type": details["data_type"]
+        })
+
+    removed_columns = []
+
+    for column in previous_names - current_names:
+
+        details = previous_columns[column]
+
+        removed_columns.append({
+            "column_name": details["column_name"],
+            "data_type": details["data_type"]
+        })
+
+    # ------------------------------------------------
+    # 5. CHECK DATA TYPE CHANGES
+    # ------------------------------------------------
+
+    datatype_changes = []
     valid_columns = []
 
-    # Compare expected and actual data types
-    for column, expected_type in expected_schema.items():
+    common_columns = previous_names.intersection(
+        current_names
+    )
 
-        # Check whether column exists
-        if column not in actual_columns:
+    for column in common_columns:
 
-            datatype_issues.append({
+        previous_type = previous_columns[column]["data_type"]
+        current_type = current_columns[column]["data_type"]
 
-                "column_name": column,
+        if normalize_data_type(previous_type) != normalize_data_type(current_type):
 
-                "expected_type": expected_type,
-
-                "actual_type": None,
-
-                "issue": "Column missing"
-
-            })
-
-            continue
-
-        actual_type = actual_columns[column]
-
-        # Compare data types
-        if actual_type.lower() != expected_type.lower():
-
-            datatype_issues.append({
-
-                "column_name": column,
-
-                "expected_type": expected_type,
-
-                "actual_type": actual_type,
-
-                "issue": "Data type mismatch"
-
+            datatype_changes.append({
+                "column_name": current_columns[column]["column_name"],
+                "previous_type": previous_type,
+                "current_type": current_type,
+                "issue": "Data type changed"
             })
 
         else:
 
-            valid_columns.append(column)
+            valid_columns.append(
+                current_columns[column]["column_name"]
+            )
+
+    # ------------------------------------------------
+    # 6. RETURN RESULTS
+    # ------------------------------------------------
+
+    has_datatype_issues = len(datatype_changes) > 0
+
+    has_schema_changes = (
+        bool(new_columns)
+        or bool(removed_columns)
+        or has_datatype_issues
+    )
 
     return {
+        "previous_snapshot_id": previous_snapshot_id,
+        "current_snapshot_id": current_snapshot_id,
 
-        "datatype_issues": datatype_issues,
+        "new_columns": new_columns,
+        "removed_columns": removed_columns,
 
-        "valid_columns": valid_columns,
+        "datatype_changes": datatype_changes,
+        "valid_columns": sorted(valid_columns),
 
-        "has_datatype_issues": bool(datatype_issues),
+        "has_datatype_issues": has_datatype_issues,
+        "has_schema_changes": has_schema_changes,
 
-        "total_issues": len(datatype_issues)
-
+        "total_issues": (
+            len(new_columns)
+            + len(removed_columns)
+            + len(datatype_changes)
+        )
     }
 
 
 # ------------------------------------------------
-# 2. Run Datatype Validation
+# 7. MAIN DATATYPE CHECK FUNCTION
 # ------------------------------------------------
 
-def run_datatype_check(table_name, expected_schema):
+def run_datatype_check(previous_snapshot_id, current_snapshot_id):
 
-    result = check_data_types(
-        table_name,
-        expected_schema
+    return check_data_types(
+        previous_snapshot_id,
+        current_snapshot_id
     )
-
-    return result

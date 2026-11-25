@@ -8,9 +8,9 @@ from config.settings import (
     databricks_tokken,
     catalog_name,
     schema_name,
-    old_data_table,
     new_data_table
 )
+
 
 
 # ------------------------------------------------
@@ -83,12 +83,18 @@ def execute_query(query, parameters=None):
         cursor = connection.cursor()
 
         try:
+
             if parameters is None:
                 cursor.execute(query)
+
             else:
                 cursor.execute(query, parameters)
 
-            return cursor.fetchall()
+            # Return rows only when query produces a result
+            if cursor.description is not None:
+                return cursor.fetchall()
+
+            return []
 
         finally:
             cursor.close()
@@ -118,7 +124,10 @@ def get_table_schema(table_name):
         column_name = row[0]
         data_type = row[1]
 
-        if not column_name or column_name.startswith("#"):
+        if (
+            not column_name
+            or column_name.startswith("#")
+        ):
             continue
 
         schema.append({
@@ -176,6 +185,7 @@ def get_table_preview(table_name, limit=5):
         cursor = connection.cursor()
 
         try:
+
             cursor.execute(query)
 
             columns = [
@@ -198,12 +208,11 @@ def get_table_preview(table_name, limit=5):
 
 
 # ------------------------------------------------
-# 7. Get Dataset Versions
+# 7. Get Current Dataset Information
 # ------------------------------------------------
 
 def get_dataset_version():
 
     return {
-        "old_version": old_data_table,
-        "new_version": new_data_table
+        "current_dataset": new_data_table
     }

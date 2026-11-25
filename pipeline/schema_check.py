@@ -1,133 +1,193 @@
 
-from pipeline.ingestion import get_table_schema
-
-from config.settings import (
-    old_data_table,
-    new_data_table
+from pipeline.ingestion import (
+    get_full_table_name,
+    execute_query
 )
 
+from pipeline.snapshot_manager import validate_snapshot_id
+
+from config.settings import snapshot_schema_table
+
 
 # ------------------------------------------------
-# 1. Compare Old and New Table Schemas
+# 1. GET SCHEMA FOR A SNAPSHOT
 # ------------------------------------------------
 
-def compare_schemas(old_table, new_table):
+def get_snapshot_schema(snapshot_id):
 
-    # Fetch schemas directly from Databricks
-    old_schema = get_table_schema(old_table)
+    snapshot_id = validate_snapshot_id(snapshot_id)
 
-    new_schema = get_table_schema(new_table)
+    schema_table = get_full_table_name(snapshot_schema_table)
 
-    # Convert schema lists into dictionaries
-    old_columns = {
-        column["column_name"]: column["data_type"]
-        for column in old_schema
-    }
+    query = f"""
+        SELECT
+            column_name,
+            data_type
+        FROM {schema_table}
+        WHERE snapshot_id = '{snapshot_id}'
+    """
 
-    new_columns = {
-        column["column_name"]: column["data_type"]
-        for column in new_schema
-    }
+    rows = execute_query(query)
 
-    # Find removed columns
-    removed_columns = []
+    schema = {}
 
-    for column, data_type in old_columns.items():
+    for row in rows:
 
-        if column not in new_columns:
+        column_name = row[0]
+        data_type = row[1]
 
-            removed_columns.append({
+        schema[column_name] = data_type
 
-                "column_name": column,
-
-                "data_type": data_type
-
-            })
-
-    # Find added columns
-    added_columns = []
-
-    for column, data_type in new_columns.items():
-
-        if column not in old_columns:
-
-            added_columns.append({
-
-                "column_name": column,
-
-                "data_type": data_type
-
-            })
-
-    # Find changed data types
-    changed_types = []
-
-    for column in old_columns:
-
-        if column in new_columns:
-
-            old_type = old_columns[column]
-
-            new_type = new_columns[column]
-
-            if old_type.lower() != new_type.lower():
-
-                changed_types.append({
-
-                    "column_name": column,
-
-                    "old_type": old_type,
-
-                    "new_type": new_type
-
-                })
-
-    # Find unchanged columns
-    unchanged_columns = []
-
-    for column in old_columns:
-
-        if (
-            column in new_columns
-            and old_columns[column].lower()
-            == new_columns[column].lower()
-        ):
-
-            unchanged_columns.append(column)
-
-    # Return comparison result
-    return {
-
-        "old_table": old_table,
-
-        "new_table": new_table,
-
-        "added_columns": added_columns,
-
-        "removed_columns": removed_columns,
-
-        "changed_types": changed_types,
-
-        "unchanged_columns": unchanged_columns,
-
-        "has_changes": bool(
-            added_columns
-            or removed_columns
-            or changed_types
+    if not schema:
+        raise ValueError(
+            f"No schema found for snapshot: {snapshot_id}"
         )
 
+    return schema
+
+
+# ------------------------------------------------
+# 2. NORMALIZE DATA TYPES
+# ------------------------------------------------
+
+def normalize_data_type(data_type):
+
+    data_type = data_type.lower().strip()
+
+    type_aliases = {
+        "int": "integer",
+        "long": "bigint",
+        "varchar": "string",
+        "text": "string",
+        "bool": "boolean"
+    }
+
+    return type_aliases.get(data_type, data_type)
+
+
+# ------------------------------------------------
+# 3. COMPARE TWO SNAPSHOT SCHEMAS
+# ------------------------------------------------
+
+def compare_snapshot_schemas(snapshot_id_1, snapshot_id_2):
+
+    snapshot_id_1 = validate_snapshot_id(snapshot_id_1)
+    snapshot_id_2 = validate_snapshot_id(snapshot_id_2)
+
+    if snapshot_id_1 == snapshot_id_2:
+        raise ValueError(
+            "Please provide two different snapshot IDs."
+        )
+
+    schema_1 = get_snapshot_schema(snapshot_id_1)
+    schema_2 = get_snapshot_schema(snapshot_id_2)
+
+    # Normalize column names for comparison.
+    columns_1 = {
+        column.lower(): {
+            "column_name": column,
+            "data_type": data_type
+        }
+        for column, data_type in schema_1.items()
+    }
+
+    columns_2 = {
+        column.lower(): {
+            "column_name": column,
+            "data_type": data_type
+        }
+        for column, data_type in schema_2.items()
+    }
+
+    names_1 = set(columns_1.keys())
+    names_2 = set(columns_2.keys())
+
+    added_columns = []
+    removed_columns = []
+    changed_datatypes = []
+    unchanged_columns = []
+
+    # ------------------------------------------------
+    # 4. CHECK ADDED AND CHANGED COLUMNS
+    # ------------------------------------------------
+
+    for column in names_2:
+
+        if column not in names_1:
+
+            added_columns.append({
+                "column_name": columns_2[column]["column_name"],
+                "new_type": columns_2[column]["data_type"]
+            })
+
+        else:
+
+            old_type = columns_1[column]["data_type"]
+            new_type = columns_2[column]["data_type"]
+
+            if normalize_data_type(old_type) != normalize_data_type(new_type):
+
+                changed_datatypes.append({
+                    "column_name": columns_2[column]["column_name"],
+                    "old_type": old_type,
+                    "new_type": new_type
+                })
+
+            else:
+
+                unchanged_columns.append(
+                    columns_2[column]["column_name"]
+                )
+
+    # ------------------------------------------------
+    # 5. CHECK REMOVED COLUMNS
+    # ------------------------------------------------
+
+    for column in names_1:
+
+        if column not in names_2:
+
+            removed_columns.append({
+                "column_name": columns_1[column]["column_name"],
+                "old_type": columns_1[column]["data_type"]
+            })
+
+    # ------------------------------------------------
+    # 6. GENERATE RESULT
+    # ------------------------------------------------
+
+    has_changes = bool(
+        added_columns
+        or removed_columns
+        or changed_datatypes
+    )
+
+    return {
+        "snapshot_1": snapshot_id_1,
+        "snapshot_2": snapshot_id_2,
+
+        "added_columns": added_columns,
+        "removed_columns": removed_columns,
+        "changed_datatypes": changed_datatypes,
+        "unchanged_columns": sorted(unchanged_columns),
+
+        "has_changes": has_changes,
+
+        "total_changes": (
+            len(added_columns)
+            + len(removed_columns)
+            + len(changed_datatypes)
+        )
     }
 
 
 # ------------------------------------------------
-# 2. Run Schema Validation
+# 7. RUN SCHEMA CHECK
 # ------------------------------------------------
 
-def run_schema_check():
+def run_schema_check(snapshot_id_1, snapshot_id_2):
 
-    result = compare_schemas(
-        old_data_table,
-        new_data_table
+    return compare_snapshot_schemas(
+        snapshot_id_1,
+        snapshot_id_2
     )
-
-    return result
