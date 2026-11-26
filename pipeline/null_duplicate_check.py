@@ -4,7 +4,10 @@ from pipeline.ingestion import (
     execute_query
 )
 
-from pipeline.snapshot_manager import validate_snapshot_id
+from pipeline.snapshot_manager import (
+    validate_snapshot_id,
+    get_latest_snapshots
+)
 
 from config.settings import (
     bronze_history_table,
@@ -33,11 +36,8 @@ def get_snapshot_columns(snapshot_id):
 
     query = f"""
         SELECT column_name
-
         FROM {schema_table}
-
         WHERE snapshot_id = '{snapshot_id}'
-
         ORDER BY column_name
     """
 
@@ -80,9 +80,7 @@ def check_null_values(snapshot_id):
         SELECT
             COUNT(*) AS total_rows,
             {", ".join(null_expressions)}
-
         FROM {history_table}
-
         WHERE snapshot_id = '{snapshot_id}'
     """
 
@@ -149,13 +147,9 @@ def check_duplicates(snapshot_id):
 
         FROM (
             SELECT COUNT(*) AS row_count
-
             FROM {history_table}
-
             WHERE snapshot_id = '{snapshot_id}'
-
             GROUP BY {column_list}
-
             HAVING COUNT(*) > 1
         ) duplicate_groups
     """
@@ -185,13 +179,115 @@ def run_null_duplicate_check(snapshot_id):
 
     return {
         "snapshot_id": snapshot_id,
-
         "null_check": null_result,
-
         "duplicate_check": duplicate_result,
-
         "has_quality_issues": (
             null_result["has_null_values"]
             or duplicate_result["has_duplicates"]
+        )
+    }
+
+
+# ------------------------------------------------
+# 6. COMPARE NULL VALUES BETWEEN LATEST SNAPSHOTS
+# ------------------------------------------------
+
+def compare_latest_snapshot_nulls():
+
+    # Get latest and previous snapshots
+    snapshots = get_latest_snapshots()
+
+    if "message" in snapshots:
+        return snapshots
+
+    latest_snapshot = snapshots["latest_snapshot"]
+    previous_snapshot = snapshots["previous_snapshot"]
+
+    latest_id = latest_snapshot["snapshot_id"]
+    previous_id = previous_snapshot["snapshot_id"]
+
+    # Run null checks on both snapshots
+    latest_result = check_null_values(latest_id)
+    previous_result = check_null_values(previous_id)
+
+    # Convert results into dictionaries
+    latest_nulls = {
+        item["column_name"]: item["null_count"]
+        for item in latest_result["null_results"]
+    }
+
+    previous_nulls = {
+        item["column_name"]: item["null_count"]
+        for item in previous_result["null_results"]
+    }
+
+    # Get all columns from both snapshots
+    all_columns = sorted(
+        set(latest_nulls) | set(previous_nulls)
+    )
+
+    comparison = []
+
+    # Compare null counts column by column
+    for column in all_columns:
+
+        previous_count = previous_nulls.get(column)
+        latest_count = latest_nulls.get(column)
+
+        if previous_count is not None and latest_count is not None:
+
+            difference = latest_count - previous_count
+
+            if difference > 0:
+                status = "NULLS_INCREASED"
+
+            elif difference < 0:
+                status = "NULLS_DECREASED"
+
+            else:
+                status = "NO_CHANGE"
+
+        elif column in latest_nulls:
+
+            difference = None
+            status = "NEW_COLUMN"
+
+        else:
+
+            difference = None
+            status = "REMOVED_COLUMN"
+
+        comparison.append({
+            "column_name": column,
+            "previous_null_count": previous_count,
+            "latest_null_count": latest_count,
+            "difference": difference,
+            "status": status
+        })
+
+    # Calculate total null cells across all columns
+    previous_total = sum(previous_nulls.values())
+    latest_total = sum(latest_nulls.values())
+
+    total_difference = latest_total - previous_total
+
+    # Return comparison report
+    return {
+        "previous_snapshot_id": previous_id,
+        "latest_snapshot_id": latest_id,
+
+        "previous_total_rows": previous_result["total_rows"],
+        "latest_total_rows": latest_result["total_rows"],
+
+        "previous_total_nulls": previous_total,
+        "latest_total_nulls": latest_total,
+
+        "total_null_difference": total_difference,
+
+        "comparison": comparison,
+
+        "has_null_changes": any(
+            item["status"] != "NO_CHANGE"
+            for item in comparison
         )
     }

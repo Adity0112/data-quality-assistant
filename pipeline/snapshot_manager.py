@@ -56,6 +56,7 @@ def create_history_table(source_table):
 
     # Reserved metadata column names.
     reserved_columns = {
+        "row_id",
         "snapshot_id",
         "snapshot_timestamp",
         "source_table"
@@ -78,6 +79,7 @@ def create_history_table(source_table):
         AS
         SELECT
             *,
+            CAST(NULL AS STRING) AS row_id,
             CAST(NULL AS STRING) AS snapshot_id,
             CAST(NULL AS TIMESTAMP) AS snapshot_timestamp,
             CAST(NULL AS STRING) AS source_table
@@ -97,6 +99,7 @@ def create_history_table(source_table):
 
     # Add missing metadata columns.
     metadata_columns = {
+        "row_id": "STRING",
         "snapshot_id": "STRING",
         "snapshot_timestamp": "TIMESTAMP",
         "source_table": "STRING"
@@ -248,11 +251,12 @@ def save_bronze_snapshot(source_table):
     safe_snapshot_id = escape_sql_string(snapshot_id)
     safe_source_table = escape_sql_string(source_table)
 
-    # Insert source records into history table.
+    # Insert source records and generate a new UUID for each row.
     insert_query = f"""
         INSERT INTO {history}
         (
             {column_list},
+            row_id,
             snapshot_id,
             snapshot_timestamp,
             source_table
@@ -260,16 +264,17 @@ def save_bronze_snapshot(source_table):
 
         SELECT
             {column_list},
-            '{safe_snapshot_id}',
-            CURRENT_TIMESTAMP(),
-            '{safe_source_table}'
+            uuid() AS row_id,
+            '{safe_snapshot_id}' AS snapshot_id,
+            CURRENT_TIMESTAMP() AS snapshot_timestamp,
+            '{safe_source_table}' AS source_table
 
         FROM {source}
     """
 
     execute_query(insert_query)
 
-    # Save schema information.
+    # Save original source schema information.
     save_snapshot_schema(
         snapshot_id,
         source_table,
@@ -281,6 +286,7 @@ def save_bronze_snapshot(source_table):
         "history_table": bronze_history_table,
         "snapshot_id": snapshot_id,
         "total_columns": len(source_schema),
+        "row_id_generated": True,
         "status": "SUCCESS"
     }
 
