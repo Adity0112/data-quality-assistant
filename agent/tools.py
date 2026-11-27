@@ -40,7 +40,8 @@ from pipeline.data_query import (
     get_row,
     filter_data,
     aggregate_data,
-    get_record_by_id
+    get_record_by_id,
+    get_schema_tables
 )
 
 
@@ -48,20 +49,11 @@ from pipeline.data_query import (
 # PART 1: DATA QUALITY TOOLS
 # ================================================================
 
-
-# ------------------------------------------------
-# 1. NULL CHECK TOOL
-# ------------------------------------------------
-
 @tool
 def null_check_tool(snapshot_id: str):
     """Check null values in a specific snapshot using its snapshot UUID."""
     return check_null_values(snapshot_id)
 
-
-# ------------------------------------------------
-# 2. DUPLICATE CHECK TOOL
-# ------------------------------------------------
 
 @tool
 def duplicate_check_tool(snapshot_id: str):
@@ -69,29 +61,17 @@ def duplicate_check_tool(snapshot_id: str):
     return check_duplicates(snapshot_id)
 
 
-# ------------------------------------------------
-# 3. NULL AND DUPLICATE CHECK TOOL
-# ------------------------------------------------
-
 @tool
 def null_duplicate_tool(snapshot_id: str):
     """Check both null values and duplicate records in a specific snapshot."""
     return run_null_duplicate_check(snapshot_id)
 
 
-# ------------------------------------------------
-# 4. SCHEMA COMPARISON TOOL
-# ------------------------------------------------
-
 @tool
 def schema_check_tool(snapshot_id_1: str, snapshot_id_2: str):
     """Compare the schemas of two snapshots using their UUIDs."""
     return run_schema_check(snapshot_id_1, snapshot_id_2)
 
-
-# ------------------------------------------------
-# 5. DATATYPE COMPARISON TOOL
-# ------------------------------------------------
 
 @tool
 def datatype_check_tool(
@@ -109,11 +89,6 @@ def datatype_check_tool(
 # PART 2: SNAPSHOT MANAGEMENT TOOLS
 # ================================================================
 
-
-# ------------------------------------------------
-# 6. SNAPSHOT HISTORY TOOL
-# ------------------------------------------------
-
 @tool
 def snapshot_history_tool():
     """
@@ -126,19 +101,11 @@ def snapshot_history_tool():
     return get_bronze_history()
 
 
-# ------------------------------------------------
-# 7. LATEST SNAPSHOT NULL COMPARISON TOOL
-# ------------------------------------------------
-
 @tool
 def compare_latest_nulls_tool():
     """Compare null values between the latest and previous snapshots."""
     return compare_latest_snapshot_nulls()
 
-
-# ------------------------------------------------
-# 8. LATEST SNAPSHOT COMPARISON TOOL
-# ------------------------------------------------
 
 @tool
 def compare_latest_snapshots_tool():
@@ -151,10 +118,6 @@ def compare_latest_snapshots_tool():
     return compare_latest_snapshots()
 
 
-# ------------------------------------------------
-# 9. SELECTED SNAPSHOT COMPARISON TOOL
-# ------------------------------------------------
-
 @tool
 def compare_selected_snapshots_tool(
     snapshot_1: str,
@@ -163,18 +126,8 @@ def compare_selected_snapshots_tool(
     """
     Compare any two snapshots.
 
-    Accepts:
-    - Snapshot positions: "1", "2", "5"
-    - "latest"
-    - "oldest"
-    - Direct snapshot UUIDs
-
+    Accepts snapshot positions, latest, oldest or direct UUIDs.
     Snapshot numbering is newest first.
-
-    Examples:
-    - Compare snapshot 1 and snapshot 5.
-    - Compare latest and oldest.
-    - Compare snapshot 2 and snapshot 4.
     """
 
     history = get_bronze_history()
@@ -222,43 +175,20 @@ def compare_selected_snapshots_tool(
 # PART 3: SQL DATA QUERY TOOLS
 # ================================================================
 
-
-# ------------------------------------------------
-# 10. DATASET INFORMATION TOOL
-# ------------------------------------------------
-
 @tool
 def dataset_info_tool():
     """
-    Get dataset information including:
-    table name, total records, column names,
-    datatypes and sample records.
+    Get information about the configured dataset:
+    table name, total records, columns, datatypes and sample records.
     """
     return get_dataset_info()
 
 
-# ------------------------------------------------
-# 11. GET ROW TOOL
-# ------------------------------------------------
-
 @tool
 def get_row_tool(column_name: str, value: str):
-    """
-    Retrieve records from the current dataset
-    using an exact column value.
+    """Retrieve records using an exact column value."""
+    return get_row(column_name, value)
 
-    Example:
-    Find tickets where subject is Account Disruption.
-    """
-    return get_row(
-        column_name,
-        value
-    )
-
-
-# ------------------------------------------------
-# 12. FILTER DATA TOOL
-# ------------------------------------------------
 
 @tool
 def filter_data_tool(
@@ -271,11 +201,7 @@ def filter_data_tool(
     Filter dataset records using a column,
     comparison operator and value.
 
-    Supported operators:
-    =, !=, >, >=, <, <=, LIKE
-
-    Example:
-    Find records where priority = high.
+    Supported operators: =, !=, >, >=, <, <=, LIKE.
     """
     return filter_data(
         column_name,
@@ -284,10 +210,6 @@ def filter_data_tool(
         limit
     )
 
-
-# ------------------------------------------------
-# 13. AGGREGATE DATA TOOL
-# ------------------------------------------------
 
 @tool
 def aggregate_data_tool(
@@ -298,14 +220,7 @@ def aggregate_data_tool(
     """
     Perform SQL aggregations on the current dataset.
 
-    Supported aggregations:
-    COUNT, SUM, AVG, MIN, MAX
-
-    Examples:
-    - Count all records.
-    - Count records grouped by priority.
-    - Count records grouped by language.
-    - Find the average or maximum of a numeric column.
+    Supported aggregations: COUNT, SUM, AVG, MIN, MAX.
     """
     return aggregate_data(
         aggregation,
@@ -314,25 +229,32 @@ def aggregate_data_tool(
     )
 
 
-# ------------------------------------------------
-# 14. GET RECORD BY UNIQUE ROW ID TOOL
-# ------------------------------------------------
-
 @tool
 def get_record_by_id_tool(row_id: str):
-    """
-    Retrieve one complete record from bronze history
-    using its unique row UUID.
-
-    Example:
-    Find the record with row ID
-    fbc40fb3-6a1f-4867-b238-ded4af885b91.
-    """
+    """Retrieve one complete record from bronze history using its unique row UUID."""
     return get_record_by_id(row_id)
 
 
 # ================================================================
-# PART 4: REGISTER ALL TOOLS
+# PART 4: SCHEMA TABLE DISCOVERY TOOL
+# ================================================================
+
+@tool
+def schema_tables_tool():
+    """
+    Get all user-facing tables in the configured Databricks catalog and schema.
+
+    Use this tool when the user asks:
+    - How many tables are present in my schema?
+    - List all tables in my schema.
+    - What tables are available in my catalog?
+    - Show the total number of tables.
+    """
+    return get_schema_tables()
+
+
+# ================================================================
+# PART 5: REGISTER ALL TOOLS
 # ================================================================
 
 tools = [
@@ -355,6 +277,9 @@ tools = [
     get_row_tool,
     filter_data_tool,
     aggregate_data_tool,
-    get_record_by_id_tool
+    get_record_by_id_tool,
+
+    # Schema discovery
+    schema_tables_tool
 
 ]

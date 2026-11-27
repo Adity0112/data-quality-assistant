@@ -12,9 +12,25 @@ from config.settings import (
 )
 
 
+# ------------------------------------------------
+# 1. VALIDATE IDENTIFIERS
+# ------------------------------------------------
+
+def validate_identifier(identifier):
+
+    if (
+        not isinstance(identifier, str)
+        or not re.fullmatch(r"[A-Za-z0-9_]+", identifier)
+    ):
+        raise ValueError(
+            f"Invalid Databricks identifier: {identifier}"
+        )
+
+    return identifier
+
 
 # ------------------------------------------------
-# 1. Databricks Connection
+# 2. DATABRICKS CONNECTION
 # ------------------------------------------------
 
 def get_connection():
@@ -43,36 +59,39 @@ def get_connection():
 
 
 # ------------------------------------------------
-# 2. Validate and Get Full Table Name
+# 3. GET FULL TABLE NAME
 # ------------------------------------------------
 
-def get_full_table_name(table_name):
+def get_full_table_name(
+    table_name,
+    catalog=None,
+    schema=None
+):
+
+    # Use default catalog and schema
+    # when they are not provided
+
+    catalog = catalog or catalog_name
+    schema = schema or schema_name
 
     identifiers = [
-        catalog_name,
-        schema_name,
+        catalog,
+        schema,
         table_name
     ]
 
     for identifier in identifiers:
-
-        if (
-            not isinstance(identifier, str)
-            or not re.fullmatch(r"[A-Za-z0-9_]+", identifier)
-        ):
-            raise ValueError(
-                f"Invalid table identifier: {identifier}"
-            )
+        validate_identifier(identifier)
 
     return (
-        f"`{catalog_name}`."
-        f"`{schema_name}`."
+        f"`{catalog}`."
+        f"`{schema}`."
         f"`{table_name}`"
     )
 
 
 # ------------------------------------------------
-# 3. Execute SQL Query
+# 4. EXECUTE SQL QUERY
 # ------------------------------------------------
 
 def execute_query(query, parameters=None):
@@ -90,7 +109,6 @@ def execute_query(query, parameters=None):
             else:
                 cursor.execute(query, parameters)
 
-            # Return rows only when query produces a result
             if cursor.description is not None:
                 return cursor.fetchall()
 
@@ -104,12 +122,97 @@ def execute_query(query, parameters=None):
 
 
 # ------------------------------------------------
-# 4. Get Table Schema
+# 5. DISCOVER AVAILABLE CATALOGS
 # ------------------------------------------------
 
-def get_table_schema(table_name):
+def get_available_catalogs():
 
-    full_table_name = get_full_table_name(table_name)
+    query = """
+        SHOW CATALOGS
+    """
+
+    rows = execute_query(query)
+
+    return [
+        row[0]
+        for row in rows
+    ]
+
+
+# ------------------------------------------------
+# 6. DISCOVER AVAILABLE SCHEMAS
+# ------------------------------------------------
+
+def get_available_schemas(catalog=None):
+
+    catalog = catalog or catalog_name
+
+    validate_identifier(catalog)
+
+    query = f"""
+        SHOW SCHEMAS IN `{catalog}`
+    """
+
+    rows = execute_query(query)
+
+    return [
+        row[0]
+        for row in rows
+    ]
+
+
+# ------------------------------------------------
+# 7. DISCOVER AVAILABLE TABLES
+# ------------------------------------------------
+
+def get_available_tables(
+    catalog=None,
+    schema=None
+):
+
+    catalog = catalog or catalog_name
+    schema = schema or schema_name
+
+    validate_identifier(catalog)
+    validate_identifier(schema)
+
+    query = f"""
+        SHOW TABLES IN `{catalog}`.`{schema}`
+    """
+
+    rows = execute_query(query)
+
+    tables = []
+
+    for row in rows:
+
+        tables.append({
+            "catalog": catalog,
+            "schema": schema,
+            "table_name": row[1],
+            "full_table_name": (
+                f"{catalog}.{schema}.{row[1]}"
+            )
+        })
+
+    return tables
+
+
+# ------------------------------------------------
+# 8. GET TABLE SCHEMA
+# ------------------------------------------------
+
+def get_table_schema(
+    table_name,
+    catalog=None,
+    schema=None
+):
+
+    full_table_name = get_full_table_name(
+        table_name,
+        catalog,
+        schema
+    )
 
     query = f"""
         DESCRIBE TABLE {full_table_name}
@@ -117,7 +220,7 @@ def get_table_schema(table_name):
 
     rows = execute_query(query)
 
-    schema = []
+    table_schema = []
 
     for row in rows:
 
@@ -130,21 +233,29 @@ def get_table_schema(table_name):
         ):
             continue
 
-        schema.append({
+        table_schema.append({
             "column_name": column_name,
             "data_type": data_type
         })
 
-    return schema
+    return table_schema
 
 
 # ------------------------------------------------
-# 5. Get Table Row Count
+# 9. GET TABLE ROW COUNT
 # ------------------------------------------------
 
-def get_table_row_count(table_name):
+def get_table_row_count(
+    table_name,
+    catalog=None,
+    schema=None
+):
 
-    full_table_name = get_full_table_name(table_name)
+    full_table_name = get_full_table_name(
+        table_name,
+        catalog,
+        schema
+    )
 
     query = f"""
         SELECT COUNT(*)
@@ -157,10 +268,15 @@ def get_table_row_count(table_name):
 
 
 # ------------------------------------------------
-# 6. Get Table Preview
+# 10. GET TABLE PREVIEW
 # ------------------------------------------------
 
-def get_table_preview(table_name, limit=5):
+def get_table_preview(
+    table_name,
+    limit=5,
+    catalog=None,
+    schema=None
+):
 
     if (
         not isinstance(limit, int)
@@ -171,7 +287,11 @@ def get_table_preview(table_name, limit=5):
             "Preview limit must be between 1 and 100."
         )
 
-    full_table_name = get_full_table_name(table_name)
+    full_table_name = get_full_table_name(
+        table_name,
+        catalog,
+        schema
+    )
 
     query = f"""
         SELECT *
@@ -208,7 +328,51 @@ def get_table_preview(table_name, limit=5):
 
 
 # ------------------------------------------------
-# 7. Get Current Dataset Information
+# 11. GET COMPLETE TABLE PROFILE
+# ------------------------------------------------
+
+def get_table_profile(
+    table_name,
+    catalog=None,
+    schema=None
+):
+
+    full_table_name = get_full_table_name(
+        table_name,
+        catalog,
+        schema
+    )
+
+    table_schema = get_table_schema(
+        table_name,
+        catalog,
+        schema
+    )
+
+    total_rows = get_table_row_count(
+        table_name,
+        catalog,
+        schema
+    )
+
+    preview = get_table_preview(
+        table_name,
+        limit=5,
+        catalog=catalog,
+        schema=schema
+    )
+
+    return {
+        "table_name": full_table_name,
+        "total_rows": total_rows,
+        "total_columns": len(table_schema),
+        "columns": table_schema,
+        "sample_records": preview
+    }
+
+
+# ------------------------------------------------
+# 12. GET CURRENT DATASET INFORMATION
 # ------------------------------------------------
 
 def get_dataset_version():

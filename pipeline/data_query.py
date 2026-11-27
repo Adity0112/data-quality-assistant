@@ -11,7 +11,9 @@ from pipeline.ingestion import (
 
 from config.settings import (
     new_data_table,
-    bronze_history_table
+    bronze_history_table,
+    catalog_name,
+    schema_name
 )
 
 
@@ -264,7 +266,6 @@ def quote_column(column_name):
 
 def get_record_by_id(row_id):
 
-    # Validate UUID.
     try:
 
         row_id = str(uuid.UUID(row_id))
@@ -273,12 +274,10 @@ def get_record_by_id(row_id):
 
         raise ValueError("Invalid row ID.")
 
-    # Get bronze history table.
     history = get_full_table_name(
         bronze_history_table
     )
 
-    # Search record using unique row ID.
     query = f"""
         SELECT *
         FROM {history}
@@ -299,3 +298,62 @@ def get_record_by_id(row_id):
         }
 
     return records[0]
+
+
+# ------------------------------------------------
+# 10. DISCOVER ALL TABLES IN THE SCHEMA
+# ------------------------------------------------
+
+def get_schema_tables():
+
+    catalog = quote_column(catalog_name)
+
+    query = f"""
+        SELECT
+            table_name,
+            table_type
+        FROM {catalog}.information_schema.tables
+        WHERE LOWER(table_schema) = LOWER(?)
+        ORDER BY table_name
+    """
+
+    all_tables = execute_select(
+        query,
+        [schema_name]
+    )
+
+    # Identify internal Databricks objects
+    internal_tables = [
+        table for table in all_tables
+        if (
+            table["table_name"].endswith("___online_index_view")
+            or table["table_name"].startswith("event_log_")
+        )
+    ]
+
+    # Exclude internal objects
+    project_tables = [
+        table for table in all_tables
+        if (
+            not table["table_name"].endswith("___online_index_view")
+            and not table["table_name"].startswith("event_log_")
+        )
+    ]
+
+    return {
+
+        "catalog": catalog_name,
+
+        "schema": schema_name,
+
+        "total_objects": len(all_tables),
+
+        "total_tables": len(project_tables),
+
+        "internal_objects": len(internal_tables),
+
+        "tables": project_tables,
+
+        "excluded_internal_objects": internal_tables
+
+    }
